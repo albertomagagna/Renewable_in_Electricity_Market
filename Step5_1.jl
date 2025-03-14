@@ -29,11 +29,11 @@ wind_turbine_data = Dict(
     "p_W6"  => (max_power = 200,  cost = 0)    
 )
 
-Demanded_energy = [4000] #MWh  #changed
+Demanded_energy = [2650] #MWh  #changed
 L = 17
 elastic_demand_data = Dict(
     "p_L1"  =>  (load_fraction = 3.8/100,  cost = 15.32),    
-    "p_L2"  =>  (load_fraction = 3.4/100,  cost = 23.32),   # changed 
+    "p_L2"  =>  (load_fraction = 3.4/100,  cost = 13.32),   # changed 
     "p_L3"  =>  (load_fraction = 6.3/100,  cost = 20.7),     
     "p_L4"  =>  (load_fraction = 2.6/100,  cost = 20.93),    
     "p_L5"  =>  (load_fraction = 2.5/100,  cost = 20.11),     
@@ -131,8 +131,8 @@ pretty_table(demands_utility; header)
 Market_clearing_price = dual(power_balance_equation)
 Market_clearing_quantity = sum(value(load_var[l]) for l in 1:L)
 println("________________________________________________________________________________")
-println("Social Welfare = ", round(objective_value(Step5), digits=2), " \$")
-println("Dual Variable power balance equation/Market clearing price:", Market_clearing_price, " \$/MWh")
+println("Social Welfare = ", round(objective_value(Step5), digits=2), " €")
+println("Dual Variable power balance equation/Market clearing price:", Market_clearing_price, " €/MWh")
 println("Market clearing quantity = ", Market_clearing_quantity, " MWh")
 println("________________________________________________________________________________")
 ###############################################################################################################
@@ -171,12 +171,12 @@ hline!([Market_clearing_price], lw=1, linestyle=:dash, color=:grey, label=:none)
 vline!([Market_clearing_quantity], lw=1, linestyle=:dash, color=:grey, label=:none)
 scatter!([Market_clearing_quantity], [Market_clearing_price], label="Equilibrium point", markersize=5, color=:purple, marker=:diamond)
 xlabel!("Power Supply/Demand (MW)")
-ylabel!("Offer Price (\$/MWh)")  
+ylabel!("Offer Price (€/MWh)")  
 title!("Supply and Demand Curves")
 
 # Add text annotations
 annotate!([(Market_clearing_quantity -100, 2.5, text("$(Market_clearing_quantity) MW", :grey, 8, rotation=90))])
-annotate!([(400, Market_clearing_price + 1, text("$(Market_clearing_price) \$/MWh", :grey, 8))])
+annotate!([(400, Market_clearing_price + 1, text("$(Market_clearing_price) €/MWh", :grey, 8))])
 
 # Display the plot
 display(fig)
@@ -189,7 +189,7 @@ display(fig)
 # BALANCING MARKET
 
 generator_outage = [8] # select generator outage
-generators_balancing_service_providers =[1,2,3,10,11,12]
+generators_balancing_service_providers =[4,5,9,10,11,12]
 upward_regulation_service = 1.1*[generator_data["p_G$g"].cost for g in 1:G] # 10% additional to day-ahead price for overproducing
 downward_regulation_service = 0.85*[generator_data["p_G$g"].cost for g in 1:G]# -15%  to day-ahead price for underproducing
 load_curtailment_cost = 50 # cost for load shedding
@@ -321,22 +321,23 @@ hline!([Market_clearing_price], lw=1, linestyle=:solid, color=:purple, label=:no
 hline!([Market_clearing_price_balancing], lw=1, linestyle=:dash, color=:grey, label=:none)
 vline!([Market_clearing_quantity_balancing], lw=1, linestyle=:dash, color=:grey, label=:none)
 scatter!([Market_clearing_quantity_balancing], [Market_clearing_price_balancing], label="Equilibrium point", markersize=5, color=:purple, marker=:diamond)
-xlabel!("Power Supply/Demand (MW)")
-ylabel!("Offer Price (\$/MWh)")  
-title!("Supply and Demand Curves for Balancing market")
+xlabel!("Power Supply/Demand to balance (MW)")
+ylabel!("Offer Price (€/MWh)")  
+title!("Balancing market clearing")
 
 # Add text annotations
 annotate!([(Market_clearing_quantity_balancing -100, 30, text("$(round(Market_clearing_quantity_balancing)) MW", :grey, 8, rotation=90))])
-annotate!([(2000, Market_clearing_price_balancing +0.5 , text("$(round(Market_clearing_price_balancing, digits=2)) \$/MWh", :grey, 8))])
-annotate!([(Market_clearing_quantity/2, Market_clearing_price +0.5 , text("$(round(Market_clearing_price, digits=2)) \$/MWh: DAY-ahead Price", :purple, 8))])
+annotate!([(2000, Market_clearing_price_balancing +0.5 , text("$(round(Market_clearing_price_balancing, digits=2)) €/MWh", :grey, 8))])
+annotate!([(Market_clearing_quantity/2, Market_clearing_price +0.5 , text("$(round(Market_clearing_price, digits=2)) €/MWh: DAY-ahead Price", :purple, 8))])
 
 # Display the plot
+savefig(fig1, "Balancing_market_clearing.png")
 display(fig1)
 
 println("________________________________________________________________________________")
 println("Power to balance = ", round(Balancing_need, digits=2), " MW")
-println("Total cost of upward regulation = ", round(objective_value(Step5_balancing), digits=2), " \$")
-println("Dual Variable power balance equation/Market clearing price:", Market_clearing_price_balancing, " \$/MWh")
+println("Total cost of upward regulation = ", round(objective_value(Step5_balancing), digits=2), " €")
+println("Dual Variable power balance equation/Market clearing price:", Market_clearing_price_balancing, " €/MWh")
 println("Market clearing quantity = ", round(Market_clearing_quantity_balancing, digits=2), " MWh")
 println("________________________________________________________________________________")
 
@@ -363,15 +364,51 @@ for w in wind_underprod
     profit_w_balancing[w] = value(wind_var[w])* underproduction_wind .* (-cost_w_vec[w] .+ Market_clearing_price_balancing ) # Profit from underproduction
 end
 
-println(round(sum(revenue_g_balancing)+ sum(revenue_w_balancing), digits=2), " \$  -->  Balancing price split between market actors")
+println(round(sum(revenue_g_balancing)+ sum(revenue_w_balancing), digits=2), " €  -->  Balancing price split between market actors")
 
-# Print of profit of each generator
+# Print of profit of each generator and wind turbine with two-price scheme
 
 header_gen = ["Generator", "Profit Day-Ahead [€]", "Profit Balancing [€]", "Profit [€]"]  # Define the header
 tab_gen_var = hcat(["p_G$g" for g in 1:G], profit_g, profit_g_balancing, profit_g + profit_g_balancing)  # Combine labels and data into a matrix
+printstyled("Profit for generators single-price and dual-price\n"; bold=true, color=:yellow)
 pretty_table(tab_gen_var; header=header_gen, crop=:none)  # Display the table
 
 header_wind = ["Wind Turbine", "Profit Day-Ahead [€]", "Profit Balancing [€]", "Profit [€]"]  # Define the header
 tab_wind_var = hcat(["p_W$w" for w in 1:W], profit_w, profit_w_balancing, profit_w + profit_w_balancing)  # Combine labels and data into a matrix
+printstyled("Profit single-price for wind turbines\n"; bold=true, color=:blue)
 pretty_table(tab_wind_var; header=header_wind, crop=:none)  # Display the table
 
+println("________________________________________________________________________________")
+
+if Balancing_need > 0
+    println("The system needs DOWN regulation -> intervention on underproducing wind turbines")
+    revenue_w_balancing = zeros(W) # init
+    profit_w_balancing = zeros(W) # init
+    for w in wind_overprod
+        revenue_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * overproduction_wind # Revenue from overproduction
+        profit_w_balancing[w] = value(wind_var[w])* overproduction_wind .* (-cost_w_vec[w] .+ Market_clearing_price_balancing ) # Profit from overproduction
+    end
+    for w in wind_underprod
+        revenue_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * underproduction_wind # Revenue from underproduction
+        profit_w_balancing[w] = value(wind_var[w])* underproduction_wind .* (-cost_w_vec[w] .+ Market_clearing_price_balancing ) # Profit from underproduction
+    end
+
+else
+    println("The system needs UP regulation -> intervention on overproducing wind turbines")
+    revenue_w_balancing = zeros(W) # init
+    profit_w_balancing = zeros(W) # init
+    for w in wind_overprod
+        revenue_w_balancing[w] = Market_clearing_price *value(wind_var[w]) * overproduction_wind # Revenue from overproduction
+        profit_w_balancing[w] = value(wind_var[w])* overproduction_wind .* (-cost_w_vec[w] .+ Market_clearing_price ) # Profit from overproduction
+    end
+    for w in wind_underprod
+        revenue_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * underproduction_wind # Revenue from underproduction
+        profit_w_balancing[w] = value(wind_var[w])* underproduction_wind .* (-cost_w_vec[w] .+ Market_clearing_price_balancing ) # Profit from underproduction
+    end
+end
+
+
+header_wind = ["Wind Turbine", "Profit Day-Ahead [€]", "Profit Balancing [€]", "Profit [€]"]  # Define the header
+tab_wind_var = hcat(["p_W$w" for w in 1:W], profit_w, profit_w_balancing, profit_w + profit_w_balancing)  # Combine labels and data into a matrix
+printstyled("Profit dual-price for wind turbines\n"; bold=true, color=:green)
+pretty_table(tab_wind_var; header=header_wind, crop=:none)  # Display the table
