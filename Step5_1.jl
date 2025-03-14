@@ -165,7 +165,7 @@ dem_y = [q[1] for q in sorted_dem]  # Prices
 dem_y = [dem_y;0]  # Add zero to the end
 
 # Plot supply and demand curves
-fig = plot(supp_x, supp_y, label="Supply", lw=2, marker=:circle, line=:step, color=:blue, legend=:bottomright, grid =:true)
+fig = plot(supp_x, supp_y, label="Supply", lw=2, marker=:circle, line=:step, color=:blue, legend=:bottomright, grid =:true,size=(800, 600))
 plot!(dem_x, dem_y, label="Demand", lw=2, marker=:circle, line=:step, color=:orange)
 hline!([Market_clearing_price], lw=1, linestyle=:dash, color=:grey, label=:none)
 vline!([Market_clearing_quantity], lw=1, linestyle=:dash, color=:grey, label=:none)
@@ -180,72 +180,89 @@ annotate!([(400, Market_clearing_price + 1, text("$(Market_clearing_price) \$/MW
 
 # Display the plot
 display(fig)
-savefig(fig, "Supply_and_Demand_Curves_Step5_1.png")
+# savefig(fig, "Supply_and_Demand_Curves_Step5_1.png")
 
 #####################################################################################################
 
 # BALANCING MARKET
-generator_outage = [8]
-overproduction_wind = 1.15 # 15% of overproduction
-underproduction_wind = 0.9 # 10% ofunderproduction
-wind_overprod = [1, 2, 3]
-wind_underprod = setdiff(1:W, wind_overprod)
-upward_regulation_service = value(dual(power_balance_equation)).+ 0.1*[generator_data[key].cost for key in keys(generator_data)] # 10% additional to day-ahead price
-downward_regulation_service =value(dual(power_balance_equation)).- 0.15*[generator_data[key].cost for key in keys(generator_data)]# -15%  to day-ahead price
-load_curtailment_cost = 500
+
+generator_outage = [8] # select generator outage
+generators_balancing_service_providers =[1,2,3,10,11,12]
+upward_regulation_service = 1.1*[generator_data["p_G$g"].cost for g in 1:G] # 10% additional to day-ahead price for overproducing
+downward_regulation_service = 0.85*[generator_data["p_G$g"].cost for g in 1:G]# -15%  to day-ahead price for underproducing
+load_curtailment_cost = 50 # cost for load shedding
+overproduction_wind = 0.15 # 15% of overproduction
+underproduction_wind = -0.1 # 10% ofunderproduction
+wind_overprod = [1, 2, 3] # select wind turbines overproducing
+wind_underprod = setdiff(1:W, wind_overprod) # wind turbines underproducing (remaining)
+
+##____________________Find generators participating in the DOWN and UP balancing____________________
+generators_balancing_service_providers = setdiff(generators_balancing_service_providers, generator_outage) # Generators actually avaialble
+
+gen_UP_reg = zeros(Int, G)  # Initialize with zeros
+gen_DOWN_reg = zeros(Int, G)  # Initialize with zeros
+
+for g in 1:G
+    if value(generator_var[g]) == generator_data["p_G$g"].max_power
+        gen_UP_reg[g] = 1
+    end
+    if value(generator_var[g]) == 0
+        gen_DOWN_reg[g] = 1
+    end
+end
+gen_UP_reg = findall(x -> x == 0, gen_UP_reg) # Find the positions of possible generators for UP regulation
+gen_DOWN_reg = findall(x -> x == 0, gen_DOWN_reg) # Find the positions of possible generators for DOWN regulation
+gen_UP_reg = intersect(generators_balancing_service_providers, gen_UP_reg) #Find gen for UP reg
+gen_DOWN_reg = intersect(generators_balancing_service_providers, gen_DOWN_reg) #Find gen for DOWN reg
+
+##____________________Find demand participating in the balancing market____________________
+demand_NON_partecipating = zeros(Int, L)  # Initialize with zeros
+for l in 1:L
+    if value(load_var[l]) == 0
+        demand_NON_partecipating[l] = 1
+    end
+end
+demand_Participating_positions = findall(x -> x == 0, demand_NON_partecipating) # Find the positions of PARTICIPATING demands
+
+# ___________________OPTIMIZATION PROBLEM_______________________________________
 
 Step5_balancing = Model(HiGHS.Optimizer)
 
-gen_NON_partecipating = zeros(Int, G)  # Initialize with zeros
-
-for g in 1:G
-    if value(generator_var[g]) == 0
-        gen_NON_partecipating[g] = 1
-    end
-end
-
-gen_NON_partecipating[generator_outage] .= 1  # Set outages to 1
-gen_NON_partecipating_position = findall(x -> x == 1, gen_NON_partecipating) # Find the positions of non-participating generators
-
 # Variables with constraints
-@variable(Step5_balancing, 0 <= generator_upward_reg[g = 1:G]   <= generator_data["p_G$g"].max_power - value(generator_var[g]))    # Generation upward
-@variable(Step5_balancing, 0 <= generator_downward_reg[g = 1:G] <= value(generator_var[g]) )    # Generation downward
+@variable(Step5_balancing, 0 <= generator_upward_reg[g = generators_balancing_service_providers]   <= generator_data["p_G$g"].max_power - value(generator_var[g]))    # Generation upward
+@variable(Step5_balancing, 0 <= generator_downward_reg[g = generators_balancing_service_providers] <= value(generator_var[g]) )    # Generation downward
 @variable(Step5_balancing, 0 <= demand_curtailment[l = 1:L]<= value(load_var[l]))  # Load curtailment
 
-# Constarint on generators not participating in balancing market 
-a = @constraint(Step5_balancing, [g in gen_NON_partecipating_position], generator_upward_reg[g] == 0)
-# @constraint(Step5_balancing, generator_downward_reg[g = gen_NON_partecipating] ==0)
-
 #%% Power balance equation
-Balancing_need = -sum(value(generator_var[g]) for g in generator_outage) + 
-                 sum(value(wind_var[w]) * overproduction_wind for w in wind_overprod) -  
-                 sum(value(wind_var[w]) * underproduction_wind for w in wind_underprod)
+Balancing_need = - sum(value(generator_var[g]) for g in generator_outage) +
+                  sum(value(wind_var[w]) * overproduction_wind for w in wind_overprod)  +
+                  sum(value(wind_var[w]) * underproduction_wind for w in wind_underprod) # Positive there is a surplus --> need DOWN reg
 
-power_balance_equation_balancing= @constraint(Step5_balancing, sum(generator_upward_reg[g] for g in 1:G) 
-                                                            - sum(generator_downward_reg[g] for g in 1:G) 
-                                                            + sum(demand_curtailment[l] for l in 1:L) == Balancing_need)
+power_balance_equation_balancing= @constraint(Step5_balancing, sum(generator_upward_reg[g] for g in generators_balancing_service_providers) 
+                                                            - sum(generator_downward_reg[g] for g in generators_balancing_service_providers) 
+                                                            + sum(demand_curtailment[l] for l in 1:L) == -Balancing_need)
 
-#%% Define the objective function (Maximize SW)
-obj_value_balancing= @objective(Step5_balancing, Min, sum(upward_regulation_service[g] * generator_upward_reg[g] for g in 1:G)
+#%% Define the objective function (Minimize)
+obj_value_balancing = @objective(Step5_balancing, Min, sum(upward_regulation_service[g] * generator_upward_reg[g] for g in generators_balancing_service_providers)
                                             + sum(load_curtailment_cost * demand_curtailment[l] for l in 1:L)
-                                            - sum(downward_regulation_service[g] * generator_downward_reg[g] for g in 1:G))
+                                            - sum(downward_regulation_service[g] * generator_downward_reg[g] for g in generators_balancing_service_providers))
                                 
 # Solve the optimization problem
 optimize!(Step5_balancing)
 
-# Print results
+#________________________________Print results________________________________________________
 println("________________________________________________________________________________")
 println("________________________________________________________________________________")
 
 println("                               Optimal Solution of Balancing Market:")
 
 # Prepare data for the table
-header_gen_UP = [["↑p_G$g"] for g in 1:G]
-tab_gen_var = [round(value(generator_upward_reg[g]), digits=2) for g in 1:G]'
+header_gen_UP = [["↑p_G$g"] for g in generators_balancing_service_providers]
+tab_gen_var = [round(value(generator_upward_reg[g]), digits=2) for g in generators_balancing_service_providers]'
 pretty_table(tab_gen_var; header=header_gen_UP, crop=:none)
 
-header_gen_DOWN = [["↓_p_G$g"] for g in 1:G]
-tab_gen_var = [round(value(generator_downward_reg[g]), digits=2) for g in 1:G]'
+header_gen_DOWN = [["↓_p_G$g"] for g in generators_balancing_service_providers]
+tab_gen_var = [round(value(generator_downward_reg[g]), digits=2) for g in generators_balancing_service_providers]'
 pretty_table(tab_gen_var; header=header_gen_DOWN, crop=:none)
 
 
@@ -257,14 +274,15 @@ println("_______________________________________________________________________
 println("________________________________________________________________________________")
 
 
-#Plot figures
-# Extract maximum power and cost for generators, wind turbines, and loads
-power_UP_g =[generator_data["p_G$g"].max_power - value(generator_var[g]) for g in 1:G]
-cost_UP_g = [upward_regulation_service for g in 1:G]
-power_DOWN_g =[-value(generator_var[g]) for g in 1:G]
-cost_DOWN_g = [-downward_regulation_service for g in 1:G]
-power_CURT_l = [value(load_var[l]) for l in 1:L]
-cost_CURT_l = [load_curtailment_cost for l in 1:L]
+#___________________________________Plot figures________________________________________________
+
+# Extract maximum power and cost for generators, demands ONLY THOSE WHICH PARTICIPATE
+power_UP_g =[generator_data["p_G$g"].max_power - value(generator_var[g]) for g in gen_UP_reg]
+cost_UP_g = [upward_regulation_service[g] for g in gen_UP_reg]
+power_DOWN_g =[-value(generator_var[g]) for g in gen_DOWN_reg]
+cost_DOWN_g = [downward_regulation_service[g] for g in gen_DOWN_reg]
+power_CURT_l = [value(load_var[l]) for l in demand_Participating_positions]
+cost_CURT_l = [load_curtailment_cost for l in demand_Participating_positions]
 
 # Combine costs and powers for generators and wind turbines
 all_costs_UP_CURT = vcat(cost_UP_g, cost_CURT_l)
@@ -272,58 +290,68 @@ all_powers_UP_CURT = vcat(power_UP_g, power_CURT_l)
 
 # Sort supply offers by cost in ascending order
 sorted_UP = sort(collect(zip(all_costs_UP_CURT, all_powers_UP_CURT)), by=x -> x[1])
+sorted_UP = sort(filter(x -> x[2] ≠ 0, collect(zip(all_costs_UP_CURT, all_powers_UP_CURT))),by = x -> x[1])
 
 # Sort demand bids by cost in descending order
-sorted_DOWN = sort(collect(zip(cost_DOWN_g, power_DOWN_g)), by=x -> x[1])
+sorted_DOWN = sort(collect(zip(cost_DOWN_g, power_DOWN_g)), by=x -> x[1], rev=true) 
 
-supp_x = [0;cumsum([q[2] for q in sorted_UP])]  # Cumulative quantities. Added 0 to start from zero
-supp_y = [q[1] for q in sorted_UP]  # Prices
-supp_y = [supp_y;supp_y[end]]  # Add the last price to the end
+UP_x = [0;cumsum([q[2] for q in sorted_UP])]  # Cumulative quantities. Added 0 to start from zero
+UP_y = [q[1] for q in sorted_UP]  # Prices
+UP_y = [UP_y;UP_y[end]]  # Add the last price to the end
 
-dem_x = [0;cumsum([q[2] for q in sorted_DOWN]) ] # Cumulative quantities. Added 0 to start from zero
-dem_y = [q[1] for q in sorted_DOWN]  # Prices
-dem_y = [dem_y;0]  # Add zero to the end
+DOWN_x = [0;cumsum([q[2] for q in sorted_DOWN]) ] # Cumulative quantities. Added 0 to start from zero
+DOWN_y = [q[1] for q in sorted_DOWN]  # Prices
+DOWN_y = [DOWN_y;DOWN_y[end]]  # Add zero to the end
 
+
+Market_clearing_price_balancing = dual(power_balance_equation_balancing)
+sum(value(generator_downward_reg[g]) for g in generators_balancing_service_providers)
+Market_clearing_quantity_balancing =  sum(value(generator_upward_reg[g]) for g in generators_balancing_service_providers) -
+                                     sum(value(generator_downward_reg[g]) for g in generators_balancing_service_providers) +
+                                     sum(value(demand_curtailment[l]) for l in 1:L)
 # Plot supply and demand curves
-fig1 = plot(supp_x, supp_y, label="Supply", lw=2, marker=:circle, line=:step, color=:blue, legend=:bottomright, grid =:true)
-plot!(dem_x, dem_y, label="Demand", lw=2, marker=:circle, line=:step, color=:orange)
-hline!([Market_clearing_price], lw=1, linestyle=:dash, color=:grey, label=:none)
-vline!([Market_clearing_quantity], lw=1, linestyle=:dash, color=:grey, label=:none)
-scatter!([Market_clearing_quantity], [Market_clearing_price], label="Equilibrium point", markersize=5, color=:purple, marker=:diamond)
+fig1 = hline([0], lw=1, linestyle=:solid, color=:black, label=:none, size=(800, 600))
+vline!([0], lw=1, linestyle=:solid, color=:black, label=:none)
+plot!(UP_x, UP_y, label="UP reg", lw=2, marker=:circle, line=:step, color=:blue, legend=:bottomright, grid =:true)
+plot!(DOWN_x, DOWN_y, label="DOWN reg", lw=2, marker=:circle, line=:step, color=:orange, grid=:true)
+hline!([Market_clearing_price], lw=1, linestyle=:solid, color=:purple, label=:none)
+
+hline!([Market_clearing_price_balancing], lw=1, linestyle=:dash, color=:grey, label=:none)
+vline!([Market_clearing_quantity_balancing], lw=1, linestyle=:dash, color=:grey, label=:none)
+scatter!([Market_clearing_quantity_balancing], [Market_clearing_price_balancing], label="Equilibrium point", markersize=5, color=:purple, marker=:diamond)
 xlabel!("Power Supply/Demand (MW)")
 ylabel!("Offer Price (\$/MWh)")  
-title!("Supply and Demand Curves")
+title!("Supply and Demand Curves for Balancing market")
 
 # Add text annotations
-annotate!([(Market_clearing_quantity -100, 2.5, text("$(Market_clearing_quantity) MW", :grey, 8, rotation=90))])
-annotate!([(400, Market_clearing_price + 1, text("$(Market_clearing_price) \$/MWh", :grey, 8))])
+annotate!([(Market_clearing_quantity_balancing -100, 30, text("$(round(Market_clearing_quantity_balancing)) MW", :grey, 8, rotation=90))])
+annotate!([(2000, Market_clearing_price_balancing +0.5 , text("$(round(Market_clearing_price_balancing, digits=2)) \$/MWh", :grey, 8))])
+annotate!([(Market_clearing_quantity/2, Market_clearing_price +0.5 , text("$(round(Market_clearing_price, digits=2)) \$/MWh: DAY-ahead Price", :purple, 8))])
 
 # Display the plot
 display(fig1)
 
-
-
-
-# Print UTILITY and PROFIT
-power_g_UP_vec =[value(generator_upward_reg[g]) for g in 1:G]             #gen UP
-cost_g_UP_vec = [upward_regulation_service["p_G$g"].cost for g in 1:G]        #gen UP
-power_g_DOWN_vec =[value(generator_downward_reg[g]) for g in 1:G]             #gen DOWN
-cost_g_DOWN_vec = [downward_regulation_service["p_G$g"].cost for g in 1:G]        #gen DOWN
-power_CURT_vec = [value(demand_curtailment[l]) for l in 1:L]                 #load
-cost_CURT_vec = [load_curtailment_cost["p_L$l"].cost for l in 1:L]   #load
-
-
-positive_UP_g = power_g_UP_vec .* (-cost_g_UP_vec.+dual(power_balance_equation))
-negative_DOWN_g = power_g_DOWN_vec .* (-cost_g_DOWN_vec.+dual(power_balance_equation))
-negative_l = power_CURT_vec .* (cost_CURT_vec.-dual(power_balance_equation_balancing))
-positive_w = 
-negative_w = 
-
-# Print of Social Welfare, Market clearing price, and Market clearing quantity
-Market_clearing_price = dual(power_balance_equation_balancing)
 println("________________________________________________________________________________")
-println("Social Welfare = ", round(objective_value(Step5), digits=2), " \$")
-println("Dual Variable power balance equation/Market clearing price:", Market_clearing_price, " \$/MWh")
+println("Power to balance = ", round(Balancing_need, digits=2), " MW")
+println("Total cost of upward regulation = ", round(objective_value(Step5_balancing), digits=2), " \$")
+println("Dual Variable power balance equation/Market clearing price:", Market_clearing_price_balancing, " \$/MWh")
+println("Market clearing quantity = ", round(Market_clearing_quantity_balancing, digits=2), " MWh")
 println("________________________________________________________________________________")
 
+# Calculation of total profit
+profit_g_balancing = zeros(G)
+for g in generators_balancing_service_providers
+    profit_g_balancing[g] = Market_clearing_price_balancing * value(generator_upward_reg[g]) 
+                        - Market_clearing_price_balancing * value(generator_downward_reg[g]) 
+end
+profit_g_balancing[generator_outage] = -Market_clearing_price_balancing * value.(generator_var[generator_outage])
 
+profit_w_balancing = zeros(W)
+for w in wind_overprod
+    profit_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * overproduction_wind
+end
+for w in wind_underprod
+    profit_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * underproduction_wind
+end
+
+println(sum(profit_g_balancing)+ sum(profit_w_balancing))
