@@ -183,6 +183,8 @@ display(fig)
 # savefig(fig, "Supply_and_Demand_Curves_Step5_1.png")
 
 #####################################################################################################
+#####################################################################################################
+#####################################################################################################
 
 # BALANCING MARKET
 
@@ -338,20 +340,38 @@ println("Dual Variable power balance equation/Market clearing price:", Market_cl
 println("Market clearing quantity = ", round(Market_clearing_quantity_balancing, digits=2), " MWh")
 println("________________________________________________________________________________")
 
-# Calculation of total profit
-profit_g_balancing = zeros(G)
+# Calculation of total profit single_price
+revenue_g_balancing = zeros(G) # init
+profit_g_balancing = zeros(G) # init
 for g in generators_balancing_service_providers
-    profit_g_balancing[g] = Market_clearing_price_balancing * value(generator_upward_reg[g]) 
-                        - Market_clearing_price_balancing * value(generator_downward_reg[g]) 
+    revenue_g_balancing[g] = Market_clearing_price_balancing * value(generator_upward_reg[g]) # Revenue from upward regulation
+                        - Market_clearing_price_balancing * value(generator_downward_reg[g])  # Revenue from downward regulation
+    profit_g_balancing[g] = value(generator_upward_reg[g]) * (-cost_g_vec[g] + Market_clearing_price_balancing) # Profit from upward regulation
+                        - value(generator_downward_reg[g]) * (-cost_g_vec[g] + Market_clearing_price_balancing) # Profit from downward regulation
 end
-profit_g_balancing[generator_outage] = -Market_clearing_price_balancing * value.(generator_var[generator_outage])
+revenue_g_balancing[generator_outage] = -Market_clearing_price_balancing * value.(generator_var[generator_outage]) # Revenue from generator outage
+profit_g_balancing[generator_outage] = -value.(generator_var[generator_outage]) .* (-cost_g_vec[generator_outage] .+ Market_clearing_price_balancing) # Profit from generator outage
 
-profit_w_balancing = zeros(W)
+revenue_w_balancing = zeros(W) # init
+profit_w_balancing = zeros(W) # init
 for w in wind_overprod
-    profit_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * overproduction_wind
+    revenue_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * overproduction_wind # Revenue from overproduction
+    profit_w_balancing[w] = value(wind_var[w])* overproduction_wind .* (-cost_w_vec[w] .+ Market_clearing_price_balancing ) # Profit from overproduction
 end
 for w in wind_underprod
-    profit_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * underproduction_wind
+    revenue_w_balancing[w] = Market_clearing_price_balancing *value(wind_var[w]) * underproduction_wind # Revenue from underproduction
+    profit_w_balancing[w] = value(wind_var[w])* underproduction_wind .* (-cost_w_vec[w] .+ Market_clearing_price_balancing ) # Profit from underproduction
 end
 
-println(sum(profit_g_balancing)+ sum(profit_w_balancing))
+println(round(sum(revenue_g_balancing)+ sum(revenue_w_balancing), digits=2), " \$  -->  Balancing price split between market actors")
+
+# Print of profit of each generator
+
+header_gen = ["Generator", "Profit Day-Ahead [€]", "Profit Balancing [€]", "Profit [€]"]  # Define the header
+tab_gen_var = hcat(["p_G$g" for g in 1:G], profit_g, profit_g_balancing, profit_g + profit_g_balancing)  # Combine labels and data into a matrix
+pretty_table(tab_gen_var; header=header_gen, crop=:none)  # Display the table
+
+header_wind = ["Wind Turbine", "Profit Day-Ahead [€]", "Profit Balancing [€]", "Profit [€]"]  # Define the header
+tab_wind_var = hcat(["p_W$w" for w in 1:W], profit_w, profit_w_balancing, profit_w + profit_w_balancing)  # Combine labels and data into a matrix
+pretty_table(tab_wind_var; header=header_wind, crop=:none)  # Display the table
+
